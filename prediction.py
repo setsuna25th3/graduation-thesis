@@ -1,316 +1,130 @@
 import os
 import argparse
-import json
+import torch
+import torch.nn.functional as F
+from PIL import Image
 from time import perf_counter
 from datetime import datetime
-from model.pred_func import *
+import torchvision.transforms as transforms
+from sklearn.metrics import accuracy_score, f1_score, roc_auc_score, confusion_matrix
+import json
+
+from model.pred_func import load_genconvit
 from model.config import load_config
 
 config = load_config()
 
-def vids(
-    ed_weight, vae_weight, root_dir="sample_prediction_data", dataset=None, num_frames=15, net=None, fp16=False
-):
-    result = set_result()
-    r = 0
-    f = 0
-    count = 0
+def evaluate_images(root_dir, net, ed_weight, vae_weight, fp16):
+    """
+    Scans a directory for images, predicts them using the model, 
+    and collects data for evaluation.
+    """
+    csv_data = []
+    f_count = 0
+    r_count = 0
     
+    # 1. Load Model
+    print(f"\n[INFO] Loading Model: {net}...")
     model = load_genconvit(config, net, ed_weight, vae_weight, fp16)
-    print(net)
+    model.eval()  # Set model to evaluation mode
     
-    for filename in os.listdir(root_dir):
-        curr_vid = os.path.join(root_dir, filename)
+    # Automatically detect device
+    device = next(model.parameters()).device
+    print(f"[INFO] Model loaded on device: {device}")
 
-        try:
-            is_vid_folder = is_video_folder(curr_vid)
-            if is_video(curr_vid) or is_vid_folder:
-                result, accuracy, count, pred = predict(
-                    curr_vid,
-                    model,
-                    fp16,
-                    result,
-                    num_frames,
-                    net,
-                    "uncategorized",
-                    count,
-                    vid_folder=is_vid_folder
-                )
-                f, r = (f + 1, r) if "FAKE" == real_or_fake(pred[0]) else (f, r + 1)
-                print(
-                    f"Prediction: {pred[1]} {real_or_fake(pred[0])} \t\tFake: {f} Real: {r}"
-                )
+    # 2. Define Image Transformations
+    # Adjust Resize((224, 224)) to (384, 384) if your model size is 'large'
+    img_size = 224 
+    if config["model"].get("type") == "large":
+        img_size = 384
+
+    transform = transforms.Compose([
+        transforms.Resize((img_size, img_size)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ])
+
+    valid_extensions = ('.png', '.jpg', '.jpeg', '.webp')
+    count = 0
+
+    print("\n[INFO] Starting Prediction...")
+    
+    # 3. Scan directory and predict
+    for dirpath, _, filenames in os.walk(root_dir):
+        for filename in filenames:
+            if not filename.lower().endswith(valid_extensions):
+                continue
+                
+            img_path = os.path.join(dirpath, filename)
+            count += 1
+
+            # Determine True Label from folder name
+            lower_dir = dirpath.lower()
+            if "real" in lower_dir or "original" in lower_dir or "0" in lower_dir:
+                true_label = "REAL"
+            elif "fake" in lower_dir or "manipulated" in lower_dir or "1" in lower_dir:
+                true_label = "FAKE"
             else:
-                print(f"Invalid video file: {curr_vid}. Please provide a valid video file.")
+                true_label = "unknown"
 
-        except Exception as e:
-            print(f"An error occurred: {str(e)}")
+            try:
+                # Process Image
+                img = Image.open(img_path).convert('RGB')
+                tensor = transform(img).unsqueeze(0).to(device)
+                
+                if fp16:
+                    tensor = tensor.half()
+                    
+                # Predict
+                with torch.no_grad():
+                    outputs = model(tensor)
+                    probs = F.softmax(outputs, dim=1)
+                    
+                    # Assuming Index 1 is FAKE and Index 0 is REAL
+                    # If your model uses Index 0 for FAKE, swap these logic
+                    pred_idx = torch.argmax(probs, dim=1).item()
+                    prob_fake = probs[0][0].item() 
+                    
+                    predicted_label = "FAKE" if pred_idx == 0 else "REAL"
+                
+                # Update counters
+                if predicted_label == "FAKE":
+                    f_count += 1
+                else:
+                    r_count += 1
+                    
+                print(f"[{count}] Predict: {prob_fake:.4f} {predicted_label} \t\t(Fake: {f_count} | Real: {r_count}) | File: {filename}")
 
-    return result
+                # Store result
+                csv_data.append({
+                    'filename': filename,
+                    'true_label': true_label,
+                    'predicted_label': predicted_label,
+                    'prob_fake': prob_fake
+                })
 
+            except Exception as e:
+                print(f"An error occurred while processing {filename}: {str(e)}")
 
-def faceforensics(
-    ed_weight, vae_weight, root_dir="FaceForensics\\data", dataset=None, num_frames=15, net=None, fp16=False
-):
-    vid_type = ["original_sequences", "manipulated_sequences"]
-    result = set_result()
-    result["video"]["compression"] = []
-    ffdirs = [
-        "DeepFakeDetection",
-        "Deepfakes",
-        "Face2Face",
-        "FaceSwap",
-        "NeuralTextures",
-    ]
-
-    # load files not used in the training set, the files are appended with compression type, _c23 or _c40
-    with open(os.path.join("json_file", "ff_file_list.json")) as j_file:
-        ff_file = list(json.load(j_file))
-
-    count = 0
-    accuracy = 0
-    model = load_genconvit(config, net, ed_weight, vae_weight, fp16)
-
-    for v_t in vid_type:
-        for dirpath, dirnames, filenames in os.walk(os.path.join(root_dir, v_t)):
-            klass = next(
-                filter(lambda x: x in dirpath.split(os.path.sep), ffdirs),
-                "original",
-            )
-            label = "REAL" if klass == "original" else "FAKE"
-            for filename in filenames:
-                try:
-                    if filename in ff_file:
-                        curr_vid = os.path.join(dirpath, filename)
-                        compression = "c23" if "c23" in curr_vid else "c40"
-                        if is_video(curr_vid):
-                            result, accuracy, count, _ = predict(
-                                curr_vid,
-                                model,
-                                fp16,
-                                result,
-                                num_frames,
-                                net,
-                                klass,
-                                count,
-                                accuracy,
-                                label,
-                                compression,
-                            )
-                        else:
-                            print(f"Invalid video file: {curr_vid}. Please provide a valid video file.")
-
-                except Exception as e:
-                    print(f"An error occurred: {str(e)}")
-
-    return result
-
-
-def timit(ed_weight, vae_weight, root_dir="DeepfakeTIMIT", dataset=None, num_frames=15, net=None, fp16=False):
-    keywords = ["higher_quality", "lower_quality"]
-    result = set_result()
-    model = load_genconvit(config, net, ed_weight, vae_weight, fp16)
-    count = 0
-    accuracy = 0
-    i = 0
-    for keyword in keywords:
-        keyword_folder_path = os.path.join(root_dir, keyword)
-        for subfolder_name in os.listdir(keyword_folder_path):
-            subfolder_path = os.path.join(keyword_folder_path, subfolder_name)
-            if os.path.isdir(subfolder_path):
-                # Loop through the AVI files in the subfolder
-                for filename in os.listdir(subfolder_path):
-                    if filename.endswith(".avi"):
-                        curr_vid = os.path.join(subfolder_path, filename)
-                        try:
-                            if is_video(curr_vid):
-                                result, accuracy, count, _ = predict(
-                                    curr_vid,
-                                    model,
-                                    fp16,
-                                    result,
-                                    num_frames,
-                                    net,
-                                    "DeepfakeTIMIT",
-                                    count,
-                                    accuracy,
-                                    "FAKE",
-                                )
-                            else:
-                                print(f"Invalid video file: {curr_vid}. Please provide a valid video file.")
-
-                        except Exception as e:
-                            print(f"An error occurred: {str(e)}")
-
-    return result
-
-
-def dfdc(
-    ed_weight,
-    vae_weight,
-    root_dir="deepfake-detection-challenge\\train_sample_videos",
-    dataset=None,
-    num_frames=15,
-    net=None,
-    fp16=False,
-):
-    result = set_result()
-    if os.path.isfile(os.path.join("json_file", "dfdc_files.json")):
-        with open(os.path.join("json_file", "dfdc_files.json")) as data_file:
-            dfdc_data = json.load(data_file)
-
-    if os.path.isfile(os.path.join(root_dir, "metadata.json")):
-        with open(os.path.join(root_dir, "metadata.json")) as data_file:
-            dfdc_meta = json.load(data_file)
-    model = load_genconvit(config, net, ed_weight, vae_weight, fp16)
-    count = 0
-    accuracy = 0
-    for dfdc in dfdc_data:
-        dfdc_file = os.path.join(root_dir, dfdc)
-
-        try:
-            if is_video(dfdc_file):
-                result, accuracy, count, _ = predict(
-                    dfdc_file,
-                    model,
-                    fp16,
-                    result,
-                    num_frames,
-                    net,
-                    "dfdc",
-                    count,
-                    accuracy,
-                    dfdc_meta[dfdc]["label"],
-                )
-            else:
-                print(f"Invalid video file: {dfdc_file}. Please provide a valid video file.")
-
-        except Exception as e:
-            print(f"An error occurred: {str(e)}")
-
-    return result
-
-
-def celeb(ed_weight, vae_weight, root_dir="Celeb-DF-v2", dataset=None, num_frames=15, net=None, fp16=False):
-    with open(os.path.join("json_file", "celeb_test.json"), "r") as f:
-        cfl = json.load(f)
-    result = set_result()
-    ky = ["Celeb-real", "Celeb-synthesis"]
-    count = 0
-    accuracy = 0
-    model = load_genconvit(config, net, ed_weight, vae_weight, fp16)
-
-    for ck in cfl:
-        ck_ = ck.split("/")
-        klass = ck_[0]
-        filename = ck_[1]
-        correct_label = "FAKE" if klass == "Celeb-synthesis" else "REAL"
-        vid = os.path.join(root_dir, ck)
-
-        try:
-            if is_video(vid):
-                result, accuracy, count, _ = predict(
-                    vid,
-                    model,
-                    fp16,
-                    result,
-                    num_frames,
-                    net,
-                    klass,
-                    count,
-                    accuracy,
-                    correct_label,
-                )
-            else:
-                print(f"Invalid video file: {vid}. Please provide a valid video file.")
-
-        except Exception as e:
-            print(f"An error occurred x: {str(e)}")
-
-    return result
-
-
-def predict(
-    vid,
-    model,
-    fp16,
-    result,
-    num_frames,
-    net,
-    klass,
-    count=0,
-    accuracy=-1,
-    correct_label="unknown",
-    compression=None,
-    vid_folder=None
-):
-    count += 1
-    print(f"\n\n{str(count)} Loading... {vid}")
-
-    start_time = perf_counter()
-
-    # locate the extracted frames of the video if provided.
-    if vid_folder:
-        df = df_face_from_folder(vid, num_frames)
-    else:
-        df = df_face(vid, num_frames)  # extract face from the frames
-
-    if fp16:
-        df.half()
-    
-    y, y_val = (
-        pred_vid(df, model)
-        if len(df) >= 1
-        else (torch.tensor(0).item(), torch.tensor(0.5).item())
-    )
-    result = store_result(
-        result, os.path.basename(vid), y, y_val, klass, correct_label, compression
-    )
-
-    if accuracy > -1:
-        if correct_label == real_or_fake(y):
-            accuracy += 1
-        print(
-            f"\nPrediction: {y_val} {real_or_fake(y)} \t\t {accuracy}/{count} {accuracy/count}"
-        )
-
-    end_time = perf_counter()
-    print("\n\n only one video--- %s seconds ---" % (end_time - start_time))
-    
-    return result, accuracy, count, [y, y_val]
+    return csv_data
 
 
 def gen_parser():
-    parser = argparse.ArgumentParser("GenConViT prediction")
-    parser.add_argument("--p", type=str, help="video or image path")
-    parser.add_argument(
-        "--f", type=int, help="number of frames to process for prediction"
-    )
-    parser.add_argument(
-        "--d", type=str, help="dataset type, dfdc, faceforensics, timit, celeb"
-    )
-    parser.add_argument(
-        "--s", help="model size type: tiny, large.",
-    )
-    parser.add_argument(
-        "--e", nargs='?', const='genconvit_ed_inference', default=None, help="weight for ed.",
-    )
-    parser.add_argument(
-        "--v", '--value', nargs='?', const='genconvit_vae_inference', default=None, help="weight for vae.",
-    )
-    
-    parser.add_argument("--fp16", type=str, help="half precision support")
+    parser = argparse.ArgumentParser("GenConViT Image Evaluation")
+    parser.add_argument("--p", type=str, required=True, help="Path to the test image directory")
+    parser.add_argument("--s", help="Model size type: tiny, large.", default="tiny")
+    parser.add_argument("--e", nargs='?', const='genconvit_ed_inference', default=None, help="Weight for ed.")
+    parser.add_argument("--v", '--value', nargs='?', const='genconvit_vae_inference', default=None, help="Weight for vae.")
+    parser.add_argument("--fp16", action='store_true', help="Use half precision (FP16)")
 
     args = parser.parse_args()
     path = args.p
-    num_frames = args.f if args.f else 15
-    dataset = args.d if args.d else "other"
-    fp16 = True if args.fp16 else False
+    fp16 = args.fp16
 
     net = 'genconvit'
-
     ed_weight = None
     vae_weight = None
+    
     if args.e and args.v:
         ed_weight = 'genconvit_ed_inference'
         vae_weight = 'genconvit_vae_inference'
@@ -320,38 +134,99 @@ def gen_parser():
     elif args.v:
         net = 'vae'
         vae_weight = 'genconvit_vae_inference'
-    
         
-    print(f'\nUsing {net}\n')  
+    if args.s in ['tiny', 'large']:
+        config["model"]["backbone"] = f"convnext_{args.s}"
+        config["model"]["embedder"] = f"swin_{args.s}_patch4_window7_224"
+        config["model"]["type"] = args.s
     
-
-    if args.s:
-        if args.s in ['tiny', 'large']:
-            config["model"]["backbone"] = f"convnext_{args.s}"
-            config["model"]["embedder"] = f"swin_{args.s}_patch4_window7_224"
-            config["model"]["type"] = args.s
-    
-    return path, dataset, num_frames, net, fp16, ed_weight, vae_weight
+    return path, net, fp16, ed_weight, vae_weight
 
 
 def main():
     start_time = perf_counter()
-    path, dataset, num_frames, net, fp16, ed_weight, vae_weight = gen_parser()
     
-    result = (
-        globals()[dataset](ed_weight, vae_weight, path, dataset, num_frames, net, fp16)
-        if dataset in ["dfdc", "faceforensics", "timit", "celeb"]
-        else vids(ed_weight, vae_weight, path, dataset, num_frames, net, fp16)
-    )
+    # Parse arguments
+    root_dir, net, fp16, ed_weight, vae_weight = gen_parser()
+    
+    if not os.path.exists(root_dir):
+        print(f"[ERROR] Directory '{root_dir}' does not exist!")
+        return
 
-    curr_time = datetime.now().strftime("%B_%d_%Y_%H_%M_%S")
-    file_path = os.path.join("result", f"prediction_{dataset}_{net}_{curr_time}.json")
+    # Run Evaluation
+    csv_data = evaluate_images(root_dir, net, ed_weight, vae_weight, fp16)
 
-    with open(file_path, "w") as f:
-        json.dump(result, f)
+    # Save directory and calculate metrics (no CSV export)
+    if csv_data:
+        os.makedirs("result", exist_ok=True)
+        curr_time = datetime.now().strftime("%B_%d_%Y_%H_%M")
+
+        print("\n" + "="*50)
+        print("Evaluation metrics:")
+        print("="*50)
+
+        try:
+            # Filter valid rows from the in-memory list
+            valid = [r for r in csv_data if r.get('true_label') != 'unknown']
+
+            if len(valid) > 0:
+                y_true = [0 if r['true_label'] == 'REAL' else 1 for r in valid]
+                y_pred = [0 if r['predicted_label'] == 'REAL' else 1 for r in valid]
+                y_scores = [r['prob_fake'] for r in valid]
+
+                acc = accuracy_score(y_true, y_pred)
+                f1 = f1_score(y_true, y_pred)
+                try:
+                    auc = roc_auc_score(y_true, y_scores)
+                except Exception:
+                    auc = None
+
+                tn, fp, fn, tp = confusion_matrix(y_true, y_pred).ravel()
+
+                fpr = fp / (fp + tn) if (fp + tn) > 0 else 0.0
+                fnr = fn / (fn + tp) if (fn + tp) > 0 else 0.0
+
+                print(f"Total Images: {len(valid)}")
+                print(f"Accuracy    : {acc:.4f} ({(acc*100):.2f}%)")
+                print(f"F1-Score    : {f1:.4f}")
+                print(f"ROC-AUC     : {auc if auc is not None else 'N/A'}")
+                print(f"FPR         : {fpr:.4f} (Real mistaken as Fake)")
+                print(f"FNR         : {fnr:.4f} (Fake mistaken as Real)")
+                print(f"Details     : TP={tp}, TN={tn}, FP={fp}, FN={fn}")
+            else:
+                print("\n[WARNING] No ground truth labels found. Make sure your folders are named 'Real' and 'Fake'.")
+        except Exception as e:
+            print(f"Error calculating metrics: {e}")
+
+        print("="*50 + "\n")
+    else:
+        print("[WARNING] No images found or processed in the directory.")
+
     end_time = perf_counter()
-    print("\n\n--- %s seconds ---" % (end_time - start_time))
+    print("--- Total processing time: {:.2f} seconds ---".format(end_time - start_time))
 
+    # Also export JSON in the same spirit as video JSON sample, but for images
+    if csv_data:
+        try:
+            result_json = {"image": {"name": [], "pred": [], "klass": [], "pred_label": [], "correct_label": []}}
+            for row in csv_data:
+                name = row.get('filename')
+                true_label = row.get('true_label', 'unknown')
+                prob_fake = row.get('prob_fake', 0.0)
+                pred_label = 'FAKE' if prob_fake >= 0.5 else 'REAL'
+                result_json["image"]["name"].append(name)
+                result_json["image"]["pred"].append(float(prob_fake))
+                result_json["image"]["klass"].append("uncategorized")
+                result_json["image"]["pred_label"].append(pred_label)
+                result_json["image"]["correct_label"].append(true_label)
+
+            json_path = os.path.join("result", f"prediction_images_{net}_{curr_time}.json")
+            with open(json_path, 'w', encoding='utf-8') as jf:
+                json.dump(result_json, jf, ensure_ascii=False, indent=4)
+
+            print(f"[OK] JSON results exported at: {json_path}")
+        except Exception as e:
+            print(f"Error exporting JSON: {e}")
 
 if __name__ == "__main__":
     main()

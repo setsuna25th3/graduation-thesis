@@ -9,9 +9,9 @@ from tqdm import tqdm
 from dataset.loader import normalize_data
 from .config import load_config
 from .genconvit import GenConViT
-from decord import VideoReader, cpu
-import glob
+# removed video-specific imports (decord, glob) per request
 from PIL import Image
+from time import perf_counter
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -92,51 +92,61 @@ def real_or_fake(prediction):
     return {0: "REAL", 1: "FAKE"}[prediction ^ 1]
 
 
-def extract_frames(video_file, num_frames=15):
-    vr = VideoReader(video_file, ctx=cpu(0))
-    total_frames = len(vr)
-
-    if num_frames == -1: 
-        # if -1, get all frames
-        indices = np.arange(total_frames).astype(int)
-    else:
-        indices = np.linspace(0, total_frames -1, num_frames, dtype=int) 
-    
-    return vr.get_batch(indices).asnumpy()  # seek frames with step_size
+# video frame extraction functions removed — this module now focuses on image prediction
 
 
-def df_face_from_folder(vid, num_frames):
-    img_list = glob.glob(vid+"/*")
-    img = []
-    for f in img_list:
-        try:
-            im = Image.open(f).convert('RGB')
-            img.append(np.asarray(im))
-        except:
-            pass
- 
-    face, count = face_rec(img[:num_frames])
-    return preprocess_frame(face) if count > 0 else []
+def is_image(img_path):
+    return os.path.isfile(img_path) and img_path.lower().endswith(tuple([".jpg", ".jpeg", ".png", ".webp"]))
 
-def df_face(vid, num_frames):
-    img = extract_frames(vid, num_frames)
-    face, count = face_rec(img)
+
+def df_face_from_image(img_path):
+    try:
+        im = Image.open(img_path).convert("RGB")
+        arr = np.asarray(im)
+    except Exception:
+        return []
+
+    face, count = face_rec([arr])
     return preprocess_frame(face) if count > 0 else []
 
 
-def is_video(vid):
-    return os.path.isfile(vid) and vid.endswith(
-        tuple([".avi", ".mp4", ".mpg", ".mpeg", ".mov"])
+def predict_img(img, model, fp16, result, klass, count=0, accuracy=-1, correct_label="unknown"):
+    count += 1
+    print(f"\n\n{str(count)} Loading image... {img}")
+    start_time = perf_counter()
+
+    df = df_face_from_image(img)
+    if fp16 and hasattr(df, "half"):
+        df = df.half()
+
+    y, y_val = (
+        pred_vid(df, model)
+        if len(df) >= 1
+        else (torch.tensor(0).item(), torch.tensor(0.5).item())
     )
 
-def is_video_folder(vid_folder):
-    img_list = glob.glob(vid_folder+"/*")
-    return len(img_list)>=1 and img_list[0].endswith(tuple(["png", "jpeg","jpg"]))
+    result = store_result(
+        result, os.path.basename(img), y, y_val, klass, correct_label, None, result_type="image"
+    )
+
+    if accuracy > -1:
+        if correct_label == real_or_fake(y):
+            accuracy += 1
+        print(f"\nPrediction: {y_val} {real_or_fake(y)} \t\t {accuracy}/{count} {accuracy/count}")
+
+    end_time = perf_counter()
+    print("\n\n image predict--- %s seconds ---" % (end_time - start_time))
+
+    return result, accuracy, count, [y, y_val]
+
+
+# video detection helpers removed
 
 
 def set_result():
+    # Return a result container for image predictions only.
     return {
-        "video": {
+        "image": {
             "name": [],
             "pred": [],
             "klass": [],
@@ -147,17 +157,27 @@ def set_result():
 
 
 def store_result(
-    result, filename, y, y_val, klass, correct_label=None, compression=None
+    result,
+    filename,
+    y,
+    y_val,
+    klass,
+    correct_label=None,
+    compression=None,
+    result_type="image",
 ):
-    result["video"]["name"].append(filename)
-    result["video"]["pred"].append(y_val)
-    result["video"]["klass"].append(klass.lower())
-    result["video"]["pred_label"].append(real_or_fake(y))
+    # result_type currently supports only "image". If callers pass another
+    # type, create a generic container for it.
+    if result_type not in result:
+        result[result_type] = {"name": [], "pred": [], "klass": [], "pred_label": [], "correct_label": []}
+
+    result[result_type]["name"].append(filename)
+    result[result_type]["pred"].append(y_val)
+    result[result_type]["klass"].append(klass.lower())
+    result[result_type]["pred_label"].append(real_or_fake(y))
 
     if correct_label is not None:
-        result["video"]["correct_label"].append(correct_label)
+        result[result_type]["correct_label"].append(correct_label)
 
-    if compression is not None:
-        result["video"]["compression"].append(compression)
-
+    # Compression is a video-specific field; ignore it for image-only results.
     return result
