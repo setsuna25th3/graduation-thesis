@@ -15,26 +15,22 @@ from model.config import load_config
 config = load_config()
 
 def evaluate_images(root_dir, net, ed_weight, vae_weight, fp16):
+    """Scans directory, predicts images and returns a JSON-like dict.
+    Returned format: {"image": {"name":[], "pred":[], "klass":[], "pred_label":[], "correct_label":[]}}
     """
-    Scans a directory for images, predicts them using the model, 
-    and collects data for evaluation.
-    """
-    csv_data = []
+    result_json = {"image": {"name": [], "pred": [], "klass": [], "pred_label": [], "correct_label": []}}
     f_count = 0
     r_count = 0
-    
+
     # 1. Load Model
     print(f"\n[INFO] Loading Model: {net}...")
     model = load_genconvit(config, net, ed_weight, vae_weight, fp16)
-    model.eval()  # Set model to evaluation mode
-    
-    # Automatically detect device
+    model.eval()
+
     device = next(model.parameters()).device
     print(f"[INFO] Model loaded on device: {device}")
 
-    # 2. Define Image Transformations
-    # Adjust Resize((224, 224)) to (384, 384) if your model size is 'large'
-    img_size = 224 
+    img_size = 224
     if config["model"].get("type") == "large":
         img_size = 384
 
@@ -47,18 +43,16 @@ def evaluate_images(root_dir, net, ed_weight, vae_weight, fp16):
     valid_extensions = ('.png', '.jpg', '.jpeg', '.webp')
     count = 0
 
-    print("\n[INFO] Starting Prediction...")
-    
-    # 3. Scan directory and predict
+    print("\n[INFO] Starting prediction...")
+
     for dirpath, _, filenames in os.walk(root_dir):
         for filename in filenames:
             if not filename.lower().endswith(valid_extensions):
                 continue
-                
+
             img_path = os.path.join(dirpath, filename)
             count += 1
 
-            # Determine True Label from folder name
             lower_dir = dirpath.lower()
             if "real" in lower_dir or "original" in lower_dir or "0" in lower_dir:
                 true_label = "REAL"
@@ -68,45 +62,35 @@ def evaluate_images(root_dir, net, ed_weight, vae_weight, fp16):
                 true_label = "unknown"
 
             try:
-                # Process Image
                 img = Image.open(img_path).convert('RGB')
                 tensor = transform(img).unsqueeze(0).to(device)
-                
                 if fp16:
                     tensor = tensor.half()
-                    
-                # Predict
+
                 with torch.no_grad():
                     outputs = model(tensor)
                     probs = F.softmax(outputs, dim=1)
-                    
-                    # Assuming Index 1 is FAKE and Index 0 is REAL
-                    # If your model uses Index 0 for FAKE, swap these logic
                     pred_idx = torch.argmax(probs, dim=1).item()
-                    prob_fake = probs[0][0].item() 
-                    
+                    prob_fake = probs[0][0].item()
                     predicted_label = "FAKE" if pred_idx == 0 else "REAL"
-                
-                # Update counters
+
                 if predicted_label == "FAKE":
                     f_count += 1
                 else:
                     r_count += 1
-                    
+
                 print(f"[{count}] Predict: {prob_fake:.4f} {predicted_label} \t\t(Fake: {f_count} | Real: {r_count}) | File: {filename}")
 
-                # Store result
-                csv_data.append({
-                    'filename': filename,
-                    'true_label': true_label,
-                    'predicted_label': predicted_label,
-                    'prob_fake': prob_fake
-                })
+                result_json["image"]["name"].append(filename)
+                result_json["image"]["pred"].append(float(prob_fake))
+                result_json["image"]["klass"].append("uncategorized")
+                result_json["image"]["pred_label"].append(predicted_label)
+                result_json["image"]["correct_label"].append(true_label)
 
             except Exception as e:
                 print(f"An error occurred while processing {filename}: {str(e)}")
 
-    return csv_data
+    return result_json
 
 
 def gen_parser():
@@ -152,12 +136,11 @@ def main():
     if not os.path.exists(root_dir):
         print(f"[ERROR] Directory '{root_dir}' does not exist!")
         return
-
     # Run Evaluation
-    csv_data = evaluate_images(root_dir, net, ed_weight, vae_weight, fp16)
+    result_json = evaluate_images(root_dir, net, ed_weight, vae_weight, fp16)
 
-    # Save directory and calculate metrics (no CSV export)
-    if csv_data:
+    # Save directory and calculate metrics (from JSON result)
+    if result_json and result_json.get("image") and len(result_json["image"].get("name", []))>0:
         os.makedirs("result", exist_ok=True)
         curr_time = datetime.now().strftime("%B_%d_%Y_%H_%M")
 
@@ -166,13 +149,14 @@ def main():
         print("="*50)
 
         try:
-            # Filter valid rows from the in-memory list
-            valid = [r for r in csv_data if r.get('true_label') != 'unknown']
+            corrects = result_json["image"].get("correct_label", [])
+            preds = result_json["image"].get("pred_label", [])
+            valid_idx = [i for i, lbl in enumerate(corrects) if lbl != 'unknown']
 
-            if len(valid) > 0:
-                y_true = [0 if r['true_label'] == 'REAL' else 1 for r in valid]
-                y_pred = [0 if r['predicted_label'] == 'REAL' else 1 for r in valid]
-                y_scores = [r['prob_fake'] for r in valid]
+            if len(valid_idx) > 0:
+                y_true = [0 if corrects[i] == 'REAL' else 1 for i in valid_idx]
+                y_pred = [0 if preds[i] == 'REAL' else 1 for i in valid_idx]
+                y_scores = [result_json["image"]["pred"][i] for i in valid_idx]
 
                 acc = accuracy_score(y_true, y_pred)
                 f1 = f1_score(y_true, y_pred)
@@ -186,7 +170,7 @@ def main():
                 fpr = fp / (fp + tn) if (fp + tn) > 0 else 0.0
                 fnr = fn / (fn + tp) if (fn + tp) > 0 else 0.0
 
-                print(f"Total Images: {len(valid)}")
+                print(f"Total Images: {len(valid_idx)}")
                 print(f"Accuracy    : {acc:.4f} ({(acc*100):.2f}%)")
                 print(f"F1-Score    : {f1:.4f}")
                 print(f"ROC-AUC     : {auc if auc is not None else 'N/A'}")
@@ -205,28 +189,15 @@ def main():
     end_time = perf_counter()
     print("--- Total processing time: {:.2f} seconds ---".format(end_time - start_time))
 
-    # Also export JSON in the same spirit as video JSON sample, but for images
-    if csv_data:
-        try:
-            result_json = {"image": {"name": [], "pred": [], "klass": [], "pred_label": [], "correct_label": []}}
-            for row in csv_data:
-                name = row.get('filename')
-                true_label = row.get('true_label', 'unknown')
-                prob_fake = row.get('prob_fake', 0.0)
-                pred_label = 'FAKE' if prob_fake >= 0.5 else 'REAL'
-                result_json["image"]["name"].append(name)
-                result_json["image"]["pred"].append(float(prob_fake))
-                result_json["image"]["klass"].append("uncategorized")
-                result_json["image"]["pred_label"].append(pred_label)
-                result_json["image"]["correct_label"].append(true_label)
-
+    # Export JSON results
+    try:
+        if result_json and result_json.get("image") and len(result_json["image"].get("name", []))>0:
             json_path = os.path.join("result", f"prediction_images_{net}_{curr_time}.json")
             with open(json_path, 'w', encoding='utf-8') as jf:
                 json.dump(result_json, jf, ensure_ascii=False, indent=4)
-
             print(f"[OK] JSON results exported at: {json_path}")
-        except Exception as e:
-            print(f"Error exporting JSON: {e}")
+    except Exception as e:
+        print(f"Error exporting JSON: {e}")
 
 if __name__ == "__main__":
     main()
