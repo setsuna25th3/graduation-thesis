@@ -3,12 +3,16 @@ import json
 import matplotlib.pyplot as plt
 from sklearn.metrics import roc_curve, roc_auc_score, f1_score
 
-json_files = [
-    os.path.join("result", "data_april14_Celeb-DF.json"),
-    os.path.join("result", "data_april14_DFDC.json"),
-    os.path.join("result", "data_april11_DeepfakeTIMIT.json"),
-    os.path.join("result", "data_april14_FF++.json"),
-]
+result_dir = "result"
+# Auto-discover all JSON files in the result directory
+json_files = sorted(
+    [
+        os.path.join(result_dir, f)
+        for f in os.listdir(result_dir)
+        if f.lower().endswith(".json")
+    ]
+)
+print("Found JSON files:", json_files)
 
 # Lists to store the ROC curve data
 fpr_list = []
