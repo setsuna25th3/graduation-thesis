@@ -110,14 +110,14 @@ def gen_parser():
     vae_weight = None
     
     if args.e and args.v:
-        ed_weight = 'genconvit_ed_inference'
-        vae_weight = 'genconvit_vae_inference'
+        ed_weight = args.e
+        vae_weight = args.v
     elif args.e:
         net = 'ed'
-        ed_weight = 'genconvit_ed_inference'
+        ed_weight = args.e
     elif args.v:
         net = 'vae'
-        vae_weight = 'genconvit_vae_inference'
+        vae_weight = args.v
         
     if args.s in ['tiny', 'large']:
         config["model"]["backbone"] = f"convnext_{args.s}"

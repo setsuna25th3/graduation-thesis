@@ -104,7 +104,7 @@ def train_model(
 
     file_path = os.path.join(
         "weight",
-        f'genconvit_{mod}_{time.strftime("%b_%d_%Y_%H_%M_%S", time.localtime())}',
+        f'genconvit_{mod}',
     )
 
     with open(f"{file_path}.pkl", "wb") as f:
