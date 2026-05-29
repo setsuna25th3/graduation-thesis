@@ -68,6 +68,7 @@ def evaluate_images(root_dir, net, ed_weight, vae_weight, fp16):
                     tensor = tensor.half()
 
                 with torch.no_grad():
+                    outputs = model(tensor)
                     outputs = outputs.view(-1, outputs.size(-1)).mean(dim=0, keepdim=True)
                     probs = F.softmax(outputs, dim=1)
                     pred_idx = torch.argmax(probs, dim=1).item()
