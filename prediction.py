@@ -64,8 +64,6 @@ def evaluate_images(root_dir, net, ed_weight, vae_weight, fp16):
             try:
                 img = Image.open(img_path).convert('RGB')
                 tensor = transform(img).unsqueeze(0).to(device)
-                if fp16:
-                    tensor = tensor.half()
 
                 with torch.no_grad():
                     outputs = model(tensor)

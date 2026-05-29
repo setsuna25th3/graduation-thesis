@@ -23,10 +23,15 @@ for json_file in json_files:
     with open(json_file, "r") as f:
         result = json.load(f)
 
+    if "video" in result:
+            data_key = "video"
+    elif "image" in result:
+        data_key = "image"
+
     # Get the actual labels and predicted probabilities or predicted labels from the result dictionary
-    actual_labels = result["video"]["correct_label"]
-    predicted_probs = result["video"]["pred"]
-    predicted_labels = result["video"]["pred_label"]
+    actual_labels = result[data_key]["correct_label"]
+    predicted_probs = result[data_key]["pred"]
+    predicted_labels = result[data_key]["pred_label"]
 
     big_pp = [1 if P >= 0.5 else 0 for P in predicted_probs]
     p_labels = [1 if label == "FAKE" else 0 for label in predicted_labels]
