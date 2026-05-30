@@ -81,4 +81,7 @@ plt.xlabel("False Positive Rate")
 plt.ylabel("True Positive Rate")
 plt.title("Receiver Operating Characteristic (ROC) Curve")
 plt.legend(loc="lower right")
-plt.show()
+
+output_image_path = "img/roc_curve_result.png"
+plt.savefig(output_image_path, dpi=300, bbox_inches='tight')
+print(f"Save plot image at: {output_image_path}")
