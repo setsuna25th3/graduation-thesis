@@ -1,28 +1,27 @@
-# Deepfake Detection
-
-This repository provides the full workflow for training, inference, and result aggregation on common deepfake datasets such as DFDC, FaceForensics++, Celeb-DF, and DeepfakeTIMIT.
+# Deepfake Image Detection
 
 Dataset download: [Google Drive link](https://drive.google.com/drive/folders/1s_HMAa7mC_0lyKJTIOVkigA8zQYzv1dH?usp=drive_link)
 
-## Highlights
+This repository is focused on image-based deepfake prediction. The main entry point is `prediction.py`, which scans an image folder, predicts each image as real or fake, and exports the results to JSON.
 
-- Supports two model variants: `ed` and `vae`.
-- Runs inference on a single image, an image folder, a single video, or a dataset directory.
-- Exports predictions to JSON for metric analysis and ROC plotting.
-- Saves checkpoints, metrics, and weights in a dedicated folder for easier management.
+## What It Does
 
-## Quick Structure
+- Predicts deepfake labels for images in a folder tree.
+- Supports two inference modes: `ed`, `vae`, or both together.
+- Saves prediction results in the `result/` directory.
+- Computes Accuracy, F1-score, ROC-AUC, FPR, and FNR when ground-truth labels can be inferred from folder names.
 
-- `train.py`: trains the model.
-- `prediction.py`: runs image inference.
-- `my_predict.py`: runs video or dataset-based inference.
-- `result_all.py`: aggregates results from the `result/` directory and plots ROC curves.
-- `model/`: model definitions and loading utilities.
-- `dataset/`: data loading utilities.
+## Project Files
+
+- `prediction.py`: image prediction script.
+- `model/`: model definitions, config, and loading helpers.
+- `result/`: exported JSON prediction files.
+- `img/`: generated plots and figures.
+- `requirements.txt`: Python dependencies.
 
 ## Requirements
 
-Python 3.10+ is recommended. A GPU is helpful for faster training, but the project can also run on CPU.
+Python 3.10+ is recommended.
 
 Main packages listed in `requirements.txt`:
 
@@ -49,64 +48,33 @@ cd graduation-thesis
 pip install -r requirements.txt
 ```
 
-3. Prepare your data and model weights using the expected project structure.
+3. Prepare an input folder that contains images.
 
-## Data Layout
+## Input Folder Format
 
-### Image Training
-
-The training, validation, and test splits should follow this structure:
+The script walks through the target directory recursively and processes these image formats:
 
 ```text
-data/
-    train/
-        fake/
-        real/
-    valid/
-        fake/
-        real/
-    test/
-        fake/
-        real/
+.png
+.jpg
+.jpeg
+.webp
 ```
 
-### Image Inference
+For automatic metric calculation, use folder names that indicate the label, such as:
 
-The input directory can contain images and nested subfolders. Folder names should hint at the label, for example `real`, `fake`, `original`, or `manipulated`.
-
-### Video Inference
-
-For video data, keep the directory structure aligned with the target dataset. The script walks the directory tree recursively.
-
-## Training
-
-Basic training command:
-
-```bash
-python train.py --d <data_path> --m <ed|vae> --e <num_epochs> --b <batch_size>
+```text
+real
+fake
+original
+manipulated
 ```
 
-Options:
+If a label cannot be inferred from the folder name, the script marks it as `unknown`.
 
-- `--d`: path to the training data.
-- `--m`: model variant, either `ed` or `vae`.
-- `--e`: number of epochs.
-- `--p`: pretrained checkpoint to continue training from.
-- `--b`: batch size, defaulting to the value in the config.
-- `--t`: run test evaluation after training if provided.
+## Usage
 
-Examples:
-
-```bash
-python train.py --d sample_train_data --m vae --e 5 --t y
-python train.py --d sample_train_data --m ed --e 5 --t y
-```
-
-After training, the model and metrics are saved in the `weight/` directory.
-
-## Image Inference
-
-Use `prediction.py` for images and image folders.
+Run image prediction with:
 
 ```bash
 python prediction.py --p <image_folder> [--e <ed_weight_name>] [--v <vae_weight_name>] [--fp16] [--s tiny|large]
@@ -115,8 +83,8 @@ python prediction.py --p <image_folder> [--e <ed_weight_name>] [--v <vae_weight_
 Options:
 
 - `--p`: input image directory.
-- `--e`: weight for the `ed` branch. If no value is provided, the script uses its default weight.
-- `--v`: weight for the `vae` branch. If no value is provided, the script uses its default weight.
+- `--e`: weight for the `ed` branch. If a value is provided, the script uses that checkpoint.
+- `--v`: weight for the `vae` branch. If a value is provided, the script uses that checkpoint.
 - `--fp16`: enable half-precision inference.
 - `--s`: backbone size, either `tiny` or `large`.
 
@@ -128,38 +96,19 @@ python prediction.py --p sample_prediction_data --v
 python prediction.py --p sample_prediction_data --e ed_weight_name --v vae_weight_name --fp16
 ```
 
-Predictions are printed to the console, and when ground-truth labels are available through folder names, the script also computes metrics such as Accuracy, F1-score, and ROC-AUC.
+If both `--e` and `--v` are provided, the script runs the combined model mode. If only one of them is provided, it switches to the corresponding branch.
 
-## Video Inference
+## Output
 
-If you want to run video-based inference on datasets such as DFDC, FaceForensics++, or DeepfakeTIMIT, use `my_predict.py`.
+After prediction, the script:
 
-```bash
-python my_predict.py
-```
-
-This script is designed to read data from the dataset directories already supported by the project and export results as JSON.
-
-## Aggregating Results
-
-Once JSON files are available in the `result/` directory, run:
-
-```bash
-python result_all.py
-```
-
-The script will:
-
-- read all JSON files in `result/`.
-- compute ROC, AUC, F1-score, and accuracy.
-- save the ROC plot to `img/roc_curve_result.png`.
+- prints per-image results to the console.
+- counts predicted real and fake samples.
+- computes metrics when ground-truth labels are available.
+- writes a JSON file named like `result/prediction_images_<mode>_<timestamp>.json`.
 
 ## Notes
 
 - Keep weight file names consistent when passing them to inference commands.
-- Some dataset paths in the code are examples, so update them to match your machine before running.
-- The project can run on CPU, but training and inference will be much slower.
-
-## Sample Outputs
-
-Example result files are stored in the `result/` directory.
+- Some example checkpoint names in the code are defaults for local testing; replace them with your own weights when needed.
+- The project can run on CPU, but inference will be slower than on GPU.

@@ -151,10 +151,10 @@ def test(model, dataloaders, dataset_sizes, mod, weight):
         bool_list = list(map(lambda x, y: x == y, pred_label, main_label))
         Sum += sum(np.array(bool_list) * 1)
         counter += 1
-        print(f"Pediction: {Sum}/{len(inputs)*counter}")
+        print(f"Testing: {Sum}/{len(inputs)*counter}")
 
     print(
-        f'Prediction: {Sum}/{dataset_sizes["test"]} {(Sum / dataset_sizes["test"]) * 100:.2f}%'
+        f'Testing: {Sum}/{dataset_sizes["test"]} {(Sum / dataset_sizes["test"]) * 100:.2f}%'
     )
 
 
