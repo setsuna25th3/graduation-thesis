@@ -1,6 +1,8 @@
-# GenConViT Deepfake Detection
+# Deepfake Detection
 
-GenConViT is a deepfake detection project for both images and videos. This repository provides the full workflow for training, inference, and result aggregation on common datasets such as DFDC, FaceForensics++, Celeb-DF, and DeepfakeTIMIT.
+This repository provides the full workflow for training, inference, and result aggregation on common deepfake datasets such as DFDC, FaceForensics++, Celeb-DF, and DeepfakeTIMIT.
+
+Dataset download: [Google Drive link](https://drive.google.com/drive/folders/1s_HMAa7mC_0lyKJTIOVkigA8zQYzv1dH?usp=drive_link)
 
 ## Highlights
 
@@ -123,7 +125,7 @@ Examples:
 ```bash
 python prediction.py --p sample_prediction_data --e
 python prediction.py --p sample_prediction_data --v
-python prediction.py --p sample_prediction_data --e genconvit_ed_May_16_2024_10_18_09 --v genconvit_vae_May_16_2024_09_34_21 --fp16
+python prediction.py --p sample_prediction_data --e ed_weight_name --v vae_weight_name --fp16
 ```
 
 Predictions are printed to the console, and when ground-truth labels are available through folder names, the script also computes metrics such as Accuracy, F1-score, and ROC-AUC.
